@@ -1,8 +1,10 @@
+import os
 import requests
 import gradio as gr
+from api import app  # your FastAPI app
 
-API_URL = "http://127.0.0.1:8000"   # where `uvicorn api:app` is running
-TIMEOUT = 120                        # seconds to wait for the bot's reply
+API_URL = f"http://127.0.0.1:{os.environ.get('PORT', 8000)}"  # same server (local: 8000, Render: $PORT)
+TIMEOUT = 120                                                  # seconds to wait for the bot's reply
 
 
 def auth_headers(user_pass: str) -> dict:
@@ -43,7 +45,7 @@ def respond(message, history, user_pass):
         r.raise_for_status()
         reply = r.json()["reply"]
     except requests.exceptions.ConnectionError:
-        reply = f"Can't reach the API at {API_URL}. Start it with: uvicorn api:app --reload"
+        reply = f"Can't reach the API at {API_URL}. Start it with: uvicorn main:app --reload"
     except requests.exceptions.RequestException as e:
         reply = f"The request failed: {e}"
 
@@ -87,14 +89,53 @@ try:
 except TypeError:
     chatbot = gr.Chatbot(height=480, label="Conversation")
 
-theme = gr.themes.Soft(primary_hue="sky", neutral_hue="slate").set(
-    body_background_fill="#f8fafc",
-    block_background_fill="#ffffff",
-    block_border_color="#e2e8f0",
-    button_primary_background_fill="#0284c7",
-    button_primary_background_fill_hover="#0369a1",
-    button_primary_text_color="#ffffff",
+theme = gr.themes.Soft(primary_hue="red", neutral_hue="stone").set(
+    body_background_fill="#F5EFE1",
+    body_text_color="#790D16",
+    block_background_fill="#E5D3AF",
+    block_border_color="#AEC4D4",
+    block_label_text_color="#F5EFE1",
+    block_label_background_fill="#790D16",
+    block_title_text_color="#F5EFE1",
+    input_background_fill="#F5EFE1",
+    input_border_color="#AEC4D4",
+    button_primary_background_fill="#790D16",
+    button_primary_background_fill_hover="#5A0A11",
+    button_primary_text_color="#F5EFE1",
+    button_primary_text_color_hover="#F5EFE1",
+    button_secondary_background_fill="#AEC4D4",
+    button_secondary_background_fill_hover="#9AB3C5",
+    button_secondary_text_color="#790D16",
 )
+
+# Force light mode regardless of the browser/OS dark-mode setting
+force_light = """
+() => {
+  const url = new URL(window.location);
+  if (url.searchParams.get('__theme') !== 'light') {
+    url.searchParams.set('__theme', 'light');
+    window.location.replace(url);
+  }
+}
+"""
+
+# Make the message input box stand out
+custom_css = """
+#msg-box textarea {
+  background: #FFFFFF !important;
+  border: 2px solid #790D16 !important;
+  border-radius: 12px !important;
+  color: #790D16 !important;
+  padding: 14px !important;
+}
+#msg-box textarea:focus {
+  box-shadow: 0 0 0 3px rgba(121, 13, 22, 0.25) !important;
+}
+#msg-box textarea::placeholder {
+  color: #790D16;
+  opacity: 0.6;
+}
+"""
 
 IS_GRADIO_6 = int(gr.__version__.split(".")[0]) >= 6
 
@@ -108,6 +149,7 @@ with gr.Blocks(title="TechNest Support Bot", **({} if IS_GRADIO_6 else {"theme":
                 placeholder="Type your message and press Enter",
                 show_label=False,
                 container=False,
+                elem_id="msg-box",
             )
             with gr.Row():
                 send_btn = gr.Button("Send", variant="primary")
@@ -131,6 +173,6 @@ with gr.Blocks(title="TechNest Support Bot", **({} if IS_GRADIO_6 else {"theme":
     refresh_btn.click(load_memories, user_pass, memories_box)
     delete_btn.click(delete_everything, user_pass, [memories_box, status, chatbot])
 
-if __name__ == "__main__":
-    # share=True creates a PUBLIC link (see warning); use demo.launch(...) without it to stay local
-    demo.launch(**({"theme": theme} if IS_GRADIO_6 else {}), share=True)
+# Serve the UI at /ui on the same server as the API
+# Start with: uvicorn main:app --reload   (Render: uvicorn main:app --host 0.0.0.0 --port $PORT)
+app = gr.mount_gradio_app(app, demo, path="/ui", theme=theme, js=force_light, css=custom_css)
