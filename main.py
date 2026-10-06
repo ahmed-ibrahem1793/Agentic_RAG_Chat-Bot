@@ -175,4 +175,4 @@ with gr.Blocks(title="TechNest Support Bot", **({} if IS_GRADIO_6 else {"theme":
 
 # Serve the UI at /ui on the same server as the API
 # Start with: uvicorn main:app --reload   (Render: uvicorn main:app --host 0.0.0.0 --port $PORT)
-app = gr.mount_gradio_app(app, demo, path="/ui", theme=theme, js=force_light, css=custom_css)
+app = gr.mount_gradio_app(app, demo, path="/", theme=theme, js=force_light, css=custom_css)
