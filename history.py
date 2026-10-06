@@ -8,11 +8,11 @@ from chroma_injection import embedding_model
 
 load_dotenv()
 DB = dict(
-    host="localhost",
+    host=os.getenv("DB_HOST"),
     dbname=os.getenv("DB_NAME"),
     user=os.getenv("DB_USER"),
     password=os.getenv("DB_PASSWORD"),
-    port=5432,
+    port=os.getenv("DB_PORT"),
 )
 
 memory_store = Chroma(
