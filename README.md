@@ -4,6 +4,8 @@ A customer-support chatbot for a fictional electronics retailer, TechNest. It an
 
 Built with **LangChain**, the **Groq API**, **ChromaDB**, **PostgreSQL**, **FastAPI**, and **Gradio**.
 
+The API and the web UI run as **one app on one port**. The Gradio UI is mounted inside the FastAPI app at `/ui`, so a single command starts everything.
+
 ---
 
 ## What the app does
@@ -12,12 +14,25 @@ Built with **LangChain**, the **Groq API**, **ChromaDB**, **PostgreSQL**, **Fast
 - **Uses tools.** The model decides which tool to call: handbook search, order lookup, web search, or web page fetch.
 - **Has short-term memory.** The last 6 turns of each conversation are kept in the prompt. They are also saved in PostgreSQL, so they survive a restart.
 - **Has long-term memory.** After each reply, a background job extracts durable facts the user stated ("owns a TechNest X", "prefers email") and stores them in ChromaDB. On later messages, the most relevant facts are added to the prompt.
-- **Has an HTTP API and a web UI.** FastAPI exposes the bot over HTTP, and a Gradio page uses that API.
+- **Has an HTTP API and a web UI.** FastAPI exposes the bot over HTTP, and a Gradio page (served at `/ui` by the same app) uses that API.
+
+### How the app is wired
+
+`main.py` imports the FastAPI `app` from `api.py`, builds the Gradio UI, and mounts it onto that same app:
+
+```
+uvicorn main:app
+   │
+   ├── /docs, /chat, /memories, /reset   → FastAPI routes (api.py)
+   └── /ui                               → Gradio UI (main.py)
+```
+
+The UI calls the API routes over HTTP on the same server (`http://127.0.0.1:$PORT`).
 
 ### How a message flows through the system
 
 ```
-Gradio UI (main.py)
+Gradio UI (main.py, served at /ui)
    │  POST /chat  + header x-user-pass
    ▼
 FastAPI (api.py)
@@ -54,9 +69,10 @@ The system prompt in `LLM.py` sets this order:
 ├── chroma_injection.py                # loads, chunks, and embeds the handbook into ChromaDB
 ├── history.py                         # short-term history (PostgreSQL) + long-term memory (ChromaDB)
 ├── LLM.py                             # the chat() function, system prompt, tool loop, memory extraction
-├── main.py                            # Gradio web UI (talks to the FastAPI routes)
+├── main.py                            # entry point: Gradio UI mounted on the FastAPI app
 ├── SQL_load_data.py                   # creates and seeds the user_orders table (run once)
 ├── tools.py                           # the four tools the model can call
+├── requirements.txt                   # exact package versions (created with pip freeze)
 ├── .env.example                       # template for your secrets and settings
 ├── .env                               # your real settings (you create this, never commit it)
 └── chroma_db/                         # created automatically: the vector database on disk
@@ -66,13 +82,13 @@ The system prompt in `LLM.py` sets this order:
 
 | File | Role |
 |---|---|
+| `main.py` | The entry point. Imports the FastAPI `app` from `api.py`, builds the Gradio UI (chat window, password box, memory buttons, theme), and mounts it at `/ui`. The UI only calls the API routes and never touches the database directly. |
 | `api.py` | Defines the FastAPI app and its routes (see [API reference](#api-reference)). Reads the user from the `x-user-pass` header and passes it to `chat()`. |
 | `LLM.py` | The core. `chat(user_pass, message)` builds the prompt, runs the tool-calling loop against Groq, saves the exchange, and starts memory extraction in a background thread. It also holds the extractor model, which turns a conversation into a list of facts. |
 | `history.py` | Everything about memory. Creates the `chat_messages` table, caches recent messages in the `sessions` dict, and reads and writes long-term memories in the `user_memories` ChromaDB collection (with duplicate detection). |
 | `tools.py` | The four tools: `retrieve_context` (handbook search), `get_order_state` (PostgreSQL lookup), `web_search` (DuckDuckGo via `ddgs`), and `web_fetch_jina` (reads a page through `r.jina.ai`). |
 | `chroma_injection.py` | Reads `assets/TechNest_Support_Handbook.md`, splits it into ~500-character chunks (on `##` and `###` headers first), embeds them with `all-MiniLM-L6-v2`, and stores them in ChromaDB. It also creates the `embedding_model` that `history.py` reuses. |
 | `SQL_load_data.py` | One-time setup script. Creates the `user_orders` table and inserts three sample users. |
-| `main.py` | The Gradio UI: a chat window, a password box, and buttons to view or delete a user's stored memories. It only calls the API and never touches the database directly. |
 
 ### Where the data lives
 
@@ -82,7 +98,7 @@ The system prompt in `LLM.py` sets this order:
 | User memories (facts) | ChromaDB, collection `user_memories` | Each fact is tagged with the user's ID |
 | Chat messages | PostgreSQL, table `chat_messages` | Created automatically by `history.py` |
 | Orders | PostgreSQL, table `user_orders` | Created by `SQL_load_data.py` |
-| Recent messages (cache) | Python dict `sessions` | Lost when the API restarts, then reloaded from PostgreSQL |
+| Recent messages (cache) | Python dict `sessions` | Lost when the app restarts, then reloaded from PostgreSQL |
 
 ---
 
@@ -131,6 +147,8 @@ pip freeze > requirements.txt
 ```
 
 Anyone else can then install everything with `pip install -r requirements.txt`.
+
+> **Gradio version:** the UI theme, forced light mode, and custom CSS in `main.py` are passed to `gr.mount_gradio_app`, which accepts them in **Gradio 6**. On Gradio 5 the app still runs, but those options are not accepted by the mount call.
 
 ### 4. Create the database
 
@@ -202,40 +220,42 @@ This creates the `user_orders` table with these sample users:
 | `user_002` | off (False) |
 | `user_003` | on (True) |
 
-### 8. Start the API
+### 8. Start the app
+
+One command starts the API and the UI together:
 
 ```
-uvicorn api:app --reload
+uvicorn main:app --reload
 ```
 
-The first start takes longer than usual. It downloads the embedding model, embeds the handbook, and creates the `chat_messages` table and the `chroma_db/` folder. The API runs at `http://127.0.0.1:8000`, and interactive docs are at `http://127.0.0.1:8000/docs`.
+The first start takes longer than usual. It downloads the embedding model, embeds the handbook, and creates the `chat_messages` table and the `chroma_db/` folder.
 
-### 9. Start the UI
+By default Uvicorn uses port 8000:
 
-In a **second terminal** (activate the venv there too):
+| URL | What it is |
+|---|---|
+| `http://127.0.0.1:8000/ui` | The chat UI |
+| `http://127.0.0.1:8000/docs` | Interactive API docs |
 
-```
-python main.py
-```
-
-Open `http://127.0.0.1:7860` in your browser.
+> Do **not** start it with `python main.py`. The file has no launch block, because the app is started by Uvicorn.
 
 ---
 
 ## Using the app
 
-1. Type a **user password** in the box on the right. This works as your user ID. Every password has its own chat history and its own memories. Use the same password to get the same "person" back later.
-2. Type your message in the chat box and press Enter.
-3. Try some questions:
+1. Open `http://127.0.0.1:8000/ui`.
+2. Type a **user password** in the box on the right. This works as your user ID. Every password has its own chat history and its own memories. Use the same password to get the same "person" back later.
+3. Type your message in the chat box and press Enter.
+4. Try some questions:
    - *"How long does standard shipping take?"* (answered from the handbook)
    - *"Can I return opened headphones?"* (answered from the handbook)
    - *"What's the current USD to EGP exchange rate?"* (web search)
    - *"What's the status of my order?"* The bot asks for your user ID. Answer with `user_001`, `user_002`, or `user_003`.
    - *"I own a TechNest X and I prefer email."* Wait a few seconds, then click **Refresh** to see the stored fact.
-4. **Memory panel:** **Refresh** shows the facts stored for your password, and **Delete all** erases them. Memory extraction runs in the background, so new facts can take a few seconds to appear.
-5. **Clear screen** only clears the chat window. It does not delete anything on the server.
+5. **Memory panel:** **Refresh** shows the facts stored for your password, and **Delete all** erases them. Memory extraction runs in the background, so new facts can take a few seconds to appear.
+6. **Clear screen** only clears the chat window. It does not delete anything on the server.
 
-To test long-term memory, tell the bot a fact, stop and restart both servers, use the same password, and ask *"What do you know about me?"*.
+To test long-term memory, tell the bot a fact, stop and restart the app, use the same password, and ask *"What do you know about me?"*.
 
 ---
 
@@ -263,12 +283,36 @@ curl -X POST http://127.0.0.1:8000/chat \
 
 ---
 
+## Deploying on Render
+
+The single-app setup is what makes this a one-service deployment.
+
+1. Push the project to GitHub (without `.env`, `venv/`, or `chroma_db/`).
+2. On Render, create a **PostgreSQL** database and copy its **Internal Database URL** details.
+3. Create a **Web Service** from the repo with:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+4. Add the environment variables from your `.env` (`DB_NAME`, `DB_USER`, `DB_HOST`, `DB_PORT`, `DB_PASSWORD`, `GROQ_API_KEY`) using the values from the Render database page.
+5. Open `https://<your-service>.onrender.com/ui`.
+
+Things to know:
+
+- Render sets the `PORT` variable itself. `main.py` reads it so the UI calls the API on the correct port.
+- `history.py` currently ignores `DB_HOST` and `DB_PORT` (see [Known limitations](#known-limitations)). Fix this before deploying, or the app will try to reach PostgreSQL on `localhost`.
+- On free plans the service sleeps when idle, so the first request after a pause can take a while.
+- The `chroma_db/` folder lives on the service's disk, which may be wiped on redeploy or restart on free plans. Long-term memories and handbook embeddings would then be rebuilt or lost, while chat history stays in PostgreSQL.
+
+---
+
 ## Customizing
 
 - **Change the knowledge base:** put a new `.md` file in `assets/` and update `FILENAME` in `chroma_injection.py`.
 - **Change the models:** both the chat model and the memory extractor are set to `openai/gpt-oss-120b` in `LLM.py`. You can give the extractor a smaller, cheaper Groq model.
 - **Change how much is remembered:** `max_turns` in `trim_history` (short-term window), `k` in `get_memories` (facts injected per message), and the `0.25` distance threshold in `add_memories` (duplicate detection).
 - **Change the bot's behavior:** edit `SYSTEM_PROMPT` in `LLM.py`.
+- **Change the UI colors:** edit the `theme = gr.themes.Soft(...).set(...)` block in `main.py`. The message box has its own styling in `custom_css` (it targets `elem_id="msg-box"`).
+- **Light or dark mode:** `force_light` in `main.py` makes the UI always load in light mode, whatever the browser or system setting. Remove `js=force_light` from the `mount_gradio_app` call to follow the system setting again.
+- **Use a different local port:** run `uvicorn main:app --reload --port 7000` and set the `PORT` environment variable to the same number (for example `$env:PORT=7000` in PowerShell, or `PORT=7000` on macOS/Linux), because the UI uses it to find the API. On Render, never hardcode the port.
 
 ---
 
@@ -277,7 +321,10 @@ curl -X POST http://127.0.0.1:8000/chat \
 | Problem | Likely cause and fix |
 |---|---|
 | `422 Unprocessable Content`, `"loc": ["header", "x-user-pass"]` | The `x-user-pass` header is missing. The name must use hyphens, not underscores. |
-| The UI says it can't reach the API | The API isn't running. Start it with `uvicorn api:app --reload`. |
+| The UI says it can't reach the API | The app isn't running, or the port doesn't match. Start it with `uvicorn main:app --reload`. If you use a custom port, set `PORT` to the same number. |
+| `python main.py` starts and exits immediately | Expected. There is no launch block. Use `uvicorn main:app --reload`. |
+| `/ui` shows a 404 | You started `uvicorn api:app` instead of `uvicorn main:app`. Only `main:app` includes the UI. |
+| The UI uses default colors, or the page is dark | Theme, CSS, and light mode need Gradio 6 (`pip install -U gradio`). Check your version with `pip show gradio`. To preview light mode, open `/ui/?__theme=light`. |
 | `connection refused` or `password authentication failed` | PostgreSQL isn't running, or the values in `.env` are wrong. |
 | `FileNotFoundError: assets/TechNest_Support_Handbook.md` | The file is missing or misnamed, or you're not running from the project root. |
 | `ModuleNotFoundError` | The venv isn't activated, or step 3 didn't finish. |
@@ -292,8 +339,9 @@ curl -X POST http://127.0.0.1:8000/chat \
 - **Order lookups trust the model.** The model supplies the `user_id` for `get_order_state`, so a user could ask about someone else's order. A safer design ties the lookup to the authenticated user.
 - **The handbook is re-ingested on every start.** `chroma_injection.py` runs at import time, and `Chroma.from_texts` appends. Restarting adds duplicate handbook chunks. Guard the ingestion with a check like `if vectorstore._collection.count() == 0:`, or move it into a one-time script.
 - **Only the top handbook chunk is used.** `retrieve_context` uses `k=1`, so answers that span several sections can be incomplete. Raising it to 3 usually helps.
-- **`history.py` ignores `DB_HOST` and `DB_PORT`.** It uses `localhost` and `5432` directly, while `tools.py` and `SQL_load_data.py` read them from `.env`.
-- **The cache is per process.** `sessions` lives in memory, so running several API workers gives each its own copy.
+- **`history.py` ignores `DB_HOST` and `DB_PORT`.** It uses `localhost` and `5432` directly, while `tools.py` and `SQL_load_data.py` read them from `.env`. This must be fixed for any deployment where PostgreSQL is not on the same machine.
+- **The UI calls the API over HTTP on the same server.** This works, but it means the app makes requests to itself. Calling the Python functions directly would be simpler and faster.
+- **The cache is per process.** `sessions` lives in memory, so running several workers gives each its own copy.
 - **`/memories` deletion uses a private Chroma attribute** (`_collection`), which could change in a future version.
 
 ---
@@ -308,4 +356,4 @@ curl -X POST http://127.0.0.1:8000/chat \
 | Relational database | PostgreSQL through `psycopg` |
 | Web search and page reading | `ddgs` (DuckDuckGo) and Jina Reader (`r.jina.ai`) |
 | API | FastAPI + Uvicorn |
-| UI | Gradio |
+| UI | Gradio, mounted inside the FastAPI app at `/ui` |
